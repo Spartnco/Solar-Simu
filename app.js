@@ -62,11 +62,26 @@
     separationAU: 0.5,
     transferRatePerYear: 0.01 / MYR, // convert from M_sun per Myr to per year
     presetsBound: false,
+    // Camera and rendering state
+    camera: {
+      zoom: 1,
+      offsetX: 0,
+      offsetY: 0,
+      isPanning: false,
+      panStartX: 0,
+      panStartY: 0,
+    },
+    bgStars: [],
   };
 
   // Utility: clamp and format
   const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
   const fmt = (v, digits = 2) => Number.isFinite(v) ? v.toFixed(digits) : '—';
+
+  // Easing utilities for smooth visual transitions
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const easeInOut = (t) => 0.5 * (1 - Math.cos(Math.PI * clamp(t, 0, 1)));
+  const easeOutCubic = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
 
   // Stellar relations (simplified)
   function msLifetimeYears(mass) {
@@ -112,6 +127,9 @@
       tTotal: total,
       ended: false,
       fate: fateForMass(mass),
+      // Visual end-state animation
+      collapseAnimating: false,
+      collapseProgress: 0,
     };
   }
 
@@ -200,41 +218,67 @@
   // Rendering: canvas star(s)
   const ctx = els.starCanvas.getContext('2d');
 
+  // Camera helpers (world<->screen). World units are pixels at zoom=1.
+  function worldToScreen(x, y) {
+    const { width, height } = els.starCanvas;
+    const { zoom, offsetX, offsetY } = state.camera;
+    return [x * zoom + width / 2 + offsetX, y * zoom + height / 2 + offsetY];
+  }
+  function screenToWorld(x, y) {
+    const { width, height } = els.starCanvas;
+    const { zoom, offsetX, offsetY } = state.camera;
+    return [(x - width / 2 - offsetX) / zoom, (y - height / 2 - offsetY) / zoom];
+  }
+
+  // Background stars (persistent)
+  function initBackgroundStars() {
+    const count = 300;
+    const spread = 4000; // world units
+    state.bgStars = Array.from({ length: count }, () => ({
+      x: (Math.random() - 0.5) * spread,
+      y: (Math.random() - 0.5) * spread,
+      r: Math.random() * 1.2 + 0.2,
+      a: 0.6 + Math.random() * 0.4,
+    }));
+  }
+
+  function drawStarfield() {
+    const { width, height } = els.starCanvas;
+    ctx.fillStyle = '#0b0f14';
+    ctx.fillRect(0, 0, width, height);
+    for (const s of state.bgStars) {
+      const [sx, sy] = worldToScreen(s.x, s.y);
+      const r = Math.max(0.2, s.r);
+      ctx.fillStyle = `rgba(255,255,255,${s.a})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   function drawStars() {
     const { width, height } = els.starCanvas;
     ctx.clearRect(0, 0, width, height);
 
-    // Background stars
-    drawBackground(width, height);
+    // Background
+    drawStarfield();
 
     if (!state.binary) {
-      drawSingleStar(state.star1, width / 2, height / 2, Math.min(width, height) * 0.35);
+      // Single star centered at world origin
+      drawStarAtWorld(state.star1, 0, 0, Math.min(width, height) * 0.35);
     } else {
-      // Two-body layout, size scaled by mass^0.4 for visibility
-      const total = state.star1.massCurrent + state.star2.massCurrent;
+      // Two-body layout, size scaled for visibility; positions based on separation
       const rScale = Math.min(width, height) * 0.3;
-      const sepPx = clamp(state.separationAU, 0.05, 10) / 10 * (width * 0.7);
-      const cx = width / 2;
-      const cy = height / 2;
+      const sepWorld = clamp(state.separationAU, 0.05, 10) / 10 * (width * 0.7); // world units
+      const x1 = -sepWorld / 2;
+      const x2 = +sepWorld / 2;
 
-      drawStarBubble(state.star1, cx - sepPx / 2, cy, rScale);
-      drawStarBubble(state.star2, cx + sepPx / 2, cy, rScale);
+      drawStarAtWorld(state.star1, x1, 0, rScale);
+      drawStarAtWorld(state.star2, x2, 0, rScale);
 
-      // Show Roche lobes (educational)
-      drawRocheLobe(state.star1, state.star2, cx - sepPx / 2, cy, state.separationAU, rScale, sepPx);
-      drawRocheLobe(state.star2, state.star1, cx + sepPx / 2, cy, state.separationAU, rScale, sepPx);
-    }
-  }
-
-  function drawBackground(w, h) {
-    ctx.fillStyle = 'rgba(255,255,255,0.08)';
-    for (let i = 0; i < 120; i++) {
-      const x = Math.random() * w;
-      const y = Math.random() * h;
-      const r = Math.random() * 1.2;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
+      // Roche lobes
+      drawRocheLobeWorld(state.star1, state.star2, x1, 0, state.separationAU, sepWorld);
+      drawRocheLobeWorld(state.star2, state.star1, x2, 0, state.separationAU, sepWorld);
     }
   }
 
@@ -247,25 +291,74 @@
     return `rgb(${r},${g},${b})`;
   }
 
-  function drawSingleStar(star, cx, cy, maxR) {
-    const { L, R, T, stage } = updateStarParams(star);
-    const size = Math.pow(R, 0.4) / Math.pow(1.0, 0.4) * (maxR * 0.6);
-    const color = colorForTemp(T);
+  // Compute dynamic visual radius in pixels at zoom=1 for the current stage/age
+  function dynamicRadiusPx(star, baseScalePx) {
+    const { R, stage } = updateStarParams(star);
 
-    drawGlow(cx, cy, size, color);
-    drawDisk(cx, cy, size * 0.6, color);
+    // Fractions within each phase
+    const fProtostar = clamp(star.age / star.tProtostar, 0, 1);
+    const fMS = clamp((star.age - star.tProtostar) / star.tMS, 0, 1);
+    const fGiant = clamp((star.age - star.tProtostar - star.tMS) / star.tGiant, 0, 1);
 
-    // Stage overlay
-    drawStageRing(cx, cy, size * 0.7, stage);
+    // Base mapping from physical radius to visual scale
+    const baseVisual = Math.pow(R, 0.4) * (baseScalePx * 0.15);
+
+    let multiplier = 1;
+    if (stage === 'Protostar') {
+      // Large then contracting to ZAMS
+      multiplier = lerp(3.0, 1.0, easeOutCubic(fProtostar));
+    } else if (stage === 'Main Sequence') {
+      // Slowly swells over life
+      const swell = star.massInitial >= 1 ? 1.5 : 1.2;
+      multiplier = lerp(1.0, swell, fMS);
+    } else if (stage === 'Giant' || stage === 'Supergiant') {
+      // Dramatic expansion
+      const maxExp = star.massInitial >= 8 ? 800 : 150; // Rsun scale implicit in R^0.4 mapping
+      const expFactor = lerp(2.0, (Math.pow(maxExp, 0.4)), easeInOut(fGiant));
+      multiplier = expFactor;
+    } else if (star.ended) {
+      // Collapsed object size
+      const finalRsun = finalCompactRadiusRsun(star);
+      const finalVisual = Math.pow(finalRsun, 0.4) * (baseScalePx * 0.15);
+      if (star.collapseAnimating && star.collapseProgress < 1) {
+        // Interpolate from pre-collapse giant to compact size
+        const preCollapse = Math.pow(Math.max(R, 1), 0.4) * (baseScalePx * 0.15) * 2.0;
+        const t = easeInOut(star.collapseProgress);
+        return lerp(preCollapse, Math.max(finalVisual, 2), t);
+      }
+      return Math.max(finalVisual, 2);
+    }
+
+    return clamp(baseVisual * multiplier, 2, baseScalePx);
   }
 
-  function drawStarBubble(star, cx, cy, rScale) {
+  function finalCompactRadiusRsun(star) {
+    // Very rough physical scales
+    if (star.fate === 'White Dwarf') {
+      return 0.012; // ~Earth-sized
+    }
+    if (star.fate === 'Neutron Star') {
+      return 1.5e-5; // ~10-15 km
+    }
+    // Black hole (Schwarzschild radius): 2.95 km per M☉
+    const rs_km = 2.95 * star.massCurrent;
+    const rsun_km = 696000;
+    return Math.max(rs_km / rsun_km, 5e-6);
+  }
+
+  function drawStarAtWorld(star, wx, wy, baseScalePx) {
     const { L, R, T, stage } = updateStarParams(star);
-    const size = Math.pow(R, 0.4) * rScale * 0.15;
+    const sizePx = dynamicRadiusPx(star, baseScalePx);
     const color = colorForTemp(T);
-    drawGlow(cx, cy, size, color);
-    drawDisk(cx, cy, size * 0.6, color);
-    drawStageRing(cx, cy, size * 0.7, stage);
+    const [cx, cy] = worldToScreen(wx, wy);
+
+    if (star.ended) {
+      drawCompactObject(star, cx, cy, sizePx);
+    } else {
+      drawGlow(cx, cy, sizePx, color);
+      drawDisk(cx, cy, sizePx * 0.6, color);
+      drawStageRing(cx, cy, sizePx * 0.7, stage);
+    }
   }
 
   function drawGlow(cx, cy, radius, color) {
@@ -303,15 +396,49 @@
     ctx.stroke();
   }
 
-  function drawRocheLobe(donor, accretor, cx, cy, separationAU, rScale, sepPx) {
+  function drawRocheLobeWorld(donor, accretor, wx, wy, separationAU, sepWorld) {
     const RL = rocheLobeRadiusAU(donor.massCurrent, accretor.massCurrent, separationAU);
-    const RLpx = RL / separationAU * sepPx;
+    const RLpx = RL / separationAU * sepWorld;
+    const [cx, cy] = worldToScreen(wx, wy);
     ctx.strokeStyle = 'rgba(255,255,255,0.35)';
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
-    ctx.arc(cx, cy, RLpx, 0, Math.PI * 2);
+    ctx.arc(cx, cy, RLpx * state.camera.zoom, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
+  }
+
+  function drawCompactObject(star, cx, cy, sizePx) {
+    if (star.fate === 'White Dwarf') {
+      const color = 'rgba(200,230,255,1)';
+      drawGlow(cx, cy, sizePx * 1.4, 'rgba(180,210,255,0.7)');
+      drawDisk(cx, cy, Math.max(2, sizePx * 0.6), color);
+      ctx.strokeStyle = 'rgba(200,230,255,0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(cx, cy, sizePx * 0.9, 0, Math.PI * 2); ctx.stroke();
+    } else if (star.fate === 'Neutron Star') {
+      // Tiny intense core with polar beams
+      drawGlow(cx, cy, sizePx * 1.2, 'rgba(199,125,255,0.8)');
+      drawDisk(cx, cy, Math.max(2, sizePx * 0.5), '#c77dff');
+      // beams
+      ctx.strokeStyle = 'rgba(199,125,255,0.7)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - sizePx * 1.6); ctx.lineTo(cx, cy - sizePx * 0.8);
+      ctx.moveTo(cx, cy + sizePx * 0.8); ctx.lineTo(cx, cy + sizePx * 1.6);
+      ctx.stroke();
+    } else {
+      // Black hole: event horizon + accretion ring
+      drawDisk(cx, cy, Math.max(3, sizePx * 0.6), '#000');
+      const ringR = Math.max(8, sizePx * 1.5);
+      const g = ctx.createRadialGradient(cx, cy, ringR * 0.7, cx, cy, ringR);
+      g.addColorStop(0, 'rgba(255,180,120,0.0)');
+      g.addColorStop(0.8, 'rgba(255,120,80,0.8)');
+      g.addColorStop(1, 'rgba(255,220,160,0.0)');
+      ctx.strokeStyle = g;
+      ctx.lineWidth = Math.max(2, ringR * 0.15);
+      ctx.beginPath(); ctx.arc(cx, cy, ringR, 0, Math.PI * 2); ctx.stroke();
+    }
   }
 
   // Timeline rendering
@@ -415,11 +542,11 @@
     }
 
     // Advance ages (both stars age together for simplicity)
-    advanceTime(dtYears);
+    advanceTime(dtYears, dtMs);
     requestAnimationFrame(tick);
   }
 
-  function advanceTime(dtYears) {
+  function advanceTime(dtYears, dtMs = 0) {
     state.t += dtYears;
 
     const stars = [state.star1, ...(state.binary ? [state.star2] : [])];
@@ -429,6 +556,14 @@
         if (star.age >= star.tTotal) {
           star.age = star.tTotal;
           star.ended = true;
+          star.collapseAnimating = true;
+          star.collapseProgress = 0;
+        }
+      } else if (star.collapseAnimating) {
+        star.collapseProgress += dtMs / 2000; // 2s collapse animation
+        if (star.collapseProgress >= 1) {
+          star.collapseProgress = 1;
+          star.collapseAnimating = false;
         }
       }
     }
@@ -581,6 +716,8 @@
       state.t = 0;
       state.running = false;
       els.playPause.textContent = 'Play';
+      // Reset camera
+      state.camera.zoom = 1; state.camera.offsetX = 0; state.camera.offsetY = 0;
       updateUI();
     });
 
@@ -594,6 +731,54 @@
 
     // Resize redraw
     window.addEventListener('resize', () => updateUI());
+
+    // Camera controls on canvas
+    const canvas = els.starCanvas;
+    canvas.addEventListener('mousedown', (e) => {
+      state.camera.isPanning = true;
+      state.camera.panStartX = e.clientX;
+      state.camera.panStartY = e.clientY;
+      canvas.classList.add('grabbing');
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!state.camera.isPanning) return;
+      const dx = e.clientX - state.camera.panStartX;
+      const dy = e.clientY - state.camera.panStartY;
+      state.camera.panStartX = e.clientX;
+      state.camera.panStartY = e.clientY;
+      state.camera.offsetX += dx;
+      state.camera.offsetY += dy;
+      updateUI();
+    });
+    window.addEventListener('mouseup', () => {
+      state.camera.isPanning = false;
+      canvas.classList.remove('grabbing');
+    });
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const { zoom } = state.camera;
+      const delta = -e.deltaY;
+      const zoomFactor = Math.exp(delta * 0.001);
+      const newZoom = clamp(zoom * zoomFactor, 0.2, 5);
+      // Anchor zoom on mouse position
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const [wx, wy] = screenToWorld(mx, my);
+      state.camera.zoom = newZoom;
+      const [sx, sy] = worldToScreen(wx, wy);
+      // Adjust offset so that the point under cursor stays fixed
+      state.camera.offsetX += (mx - sx);
+      state.camera.offsetY += (my - sy);
+      updateUI();
+    }, { passive: false });
+    canvas.addEventListener('dblclick', () => {
+      // Reset camera
+      state.camera.zoom = 1;
+      state.camera.offsetX = 0;
+      state.camera.offsetY = 0;
+      updateUI();
+    });
   }
 
   function applyPreset(name) {
@@ -619,6 +804,8 @@
         break;
     }
     state.t = 0; state.running = false; els.playPause.textContent = 'Play';
+    // Reset camera
+    state.camera.zoom = 1; state.camera.offsetX = 0; state.camera.offsetY = 0;
     updateUI();
   }
 
@@ -627,6 +814,7 @@
     setBinaryEnabled(false);
     syncMassInputs('primary');
     syncMassInputs('secondary');
+    initBackgroundStars();
     wireEvents();
     updateUI();
   }

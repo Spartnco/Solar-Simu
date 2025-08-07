@@ -119,7 +119,9 @@ input:checked + .slider:before { transform: translateX(22px); }
               #0b0f14;
   border: 1px solid rgba(255,255,255,0.06);
   border-radius: 12px;
+  cursor: grab;
 }
+#starCanvas.grabbing { cursor: grabbing; }
 
 .info-cards { display: grid; grid-template-columns: 1fr; gap: 12px; }
 .card {
