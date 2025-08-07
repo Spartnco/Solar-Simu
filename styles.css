@@ -120,6 +120,7 @@ input:checked + .slider:before { transform: translateX(22px); }
   border: 1px solid rgba(255,255,255,0.06);
   border-radius: 12px;
   cursor: grab;
+  user-select: none;
 }
 #starCanvas.grabbing { cursor: grabbing; }
 
@@ -142,7 +143,9 @@ input:checked + .slider:before { transform: translateX(22px); }
 .timeline-track {
   position: relative; height: 26px; border-radius: 8px;
   background: #101722; overflow: hidden; border: 1px solid rgba(255,255,255,0.06);
+  cursor: pointer;
 }
+.timeline-track:active { filter: brightness(1.08); }
 .timeline-track .segment { position: absolute; top: 0; bottom: 0; }
 .segment.protostar { background: var(--protostar); }
 .segment.ms { background: var(--ms); }
