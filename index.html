@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stellar Life Simulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="logo">☀️</div>
+      <div class="titles">
+        <h1>Stellar Life Simulator</h1>
+        <p>Explore how mass shapes a star’s life and final fate</p>
+      </div>
+    </div>
+    <nav class="presets">
+      <button class="btn btn-secondary" data-preset="red-dwarf">Red Dwarf (0.2 M☉)</button>
+      <button class="btn btn-secondary" data-preset="sun">Sun-like (1.0 M☉)</button>
+      <button class="btn btn-secondary" data-preset="massive">Massive (20 M☉)</button>
+      <button class="btn btn-secondary" data-preset="binary-rlof">Binary RLOF</button>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <aside class="controls">
+      <section class="panel">
+        <h2>Single Star</h2>
+        <div class="control">
+          <label for="massPrimary">Mass (M☉)</label>
+          <div class="range-row">
+            <input type="range" id="massPrimary" min="0.1" max="50" step="0.01" value="1" />
+            <input type="number" id="massPrimaryInput" min="0.1" max="50" step="0.01" value="1" />
+          </div>
+          <small>Drag or type. Higher mass = brighter, hotter, shorter-lived.</small>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="toggle-row">
+          <h2>Binary System</h2>
+          <label class="switch">
+            <input type="checkbox" id="binaryToggle" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div id="binaryControls" class="binary-controls hidden">
+          <div class="control">
+            <label for="massSecondary">Secondary Mass (M☉)</label>
+            <div class="range-row">
+              <input type="range" id="massSecondary" min="0.1" max="50" step="0.01" value="0.8" />
+              <input type="number" id="massSecondaryInput" min="0.1" max="50" step="0.01" value="0.8" />
+            </div>
+          </div>
+          <div class="control">
+            <label for="separation">Separation (AU)</label>
+            <div class="range-row">
+              <input type="range" id="separation" min="0.01" max="10" step="0.01" value="0.5" />
+              <input type="number" id="separationInput" min="0.01" max="10" step="0.01" value="0.5" />
+            </div>
+            <small>At close separations, a star can overflow its Roche lobe and transfer mass.</small>
+          </div>
+          <div class="control">
+            <label for="transferRate">Mass Transfer Rate (M☉ / Myr)</label>
+            <div class="range-row">
+              <input type="range" id="transferRate" min="0" max="0.2" step="0.001" value="0.01" />
+              <input type="number" id="transferRateInput" min="0" max="0.2" step="0.001" value="0.01" />
+            </div>
+            <small>Applied when a star overfills its Roche lobe. Direction: donor → accretor.</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Time</h2>
+        <div class="time-controls">
+          <div class="buttons">
+            <button id="playPause" class="btn btn-primary">Play</button>
+            <button id="reset" class="btn btn-tertiary">Reset</button>
+          </div>
+          <div class="control">
+            <label for="speed">Simulation Speed</label>
+            <div class="range-row">
+              <input type="range" id="speed" min="0.1" max="200" step="0.1" value="10" />
+              <span id="speedLabel">10×</span>
+            </div>
+            <div class="checkbox-row">
+              <input type="checkbox" id="autoScale" checked />
+              <label for="autoScale">Auto-scale: traverse lifetime in ~60 s</label>
+            </div>
+          </div>
+          <div class="time-readout">
+            <div><strong>Age:</strong> <span id="ageLabel">0</span></div>
+            <div><strong>Lifetime:</strong> <span id="lifetimeLabel">—</span></div>
+          </div>
+          <div class="progress" aria-label="lifetime progress">
+            <div id="progressBar" class="progress-bar"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel fate-scale">
+        <h2>Mass Fate Scale</h2>
+        <div class="scale" id="massScale"></div>
+        <div class="scale-legend">
+          <span class="legend-chip wd">White Dwarf</span>
+          <span class="legend-chip ns">Neutron Star</span>
+          <span class="legend-chip bh">Black Hole</span>
+        </div>
+      </section>
+    </aside>
+
+    <section class="visualization">
+      <div class="canvas-row">
+        <canvas id="starCanvas" width="720" height="420" aria-label="star visualization"></canvas>
+        <div class="info-cards">
+          <div class="card">
+            <h3>Primary Star</h3>
+            <div class="kv"><span>Stage</span><strong id="stagePrimary">—</strong></div>
+            <div class="kv"><span>Mass</span><strong id="massPrimaryOut">1.00 M☉</strong></div>
+            <div class="kv"><span>Luminosity</span><strong id="luminosityPrimary">— L☉</strong></div>
+            <div class="kv"><span>Radius</span><strong id="radiusPrimary">— R☉</strong></div>
+            <div class="kv"><span>Temperature</span><strong id="tempPrimary">— K</strong></div>
+            <div class="kv"><span>Fate</span><strong id="fatePrimary">—</strong></div>
+          </div>
+          <div class="card" id="secondaryCard">
+            <h3>Secondary Star</h3>
+            <div class="kv"><span>Stage</span><strong id="stageSecondary">—</strong></div>
+            <div class="kv"><span>Mass</span><strong id="massSecondaryOut">—</strong></div>
+            <div class="kv"><span>Luminosity</span><strong id="luminositySecondary">—</strong></div>
+            <div class="kv"><span>Radius</span><strong id="radiusSecondary">—</strong></div>
+            <div class="kv"><span>Temperature</span><strong id="tempSecondary">—</strong></div>
+            <div class="kv"><span>Fate</span><strong id="fateSecondary">—</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="timeline">
+        <h2>Lifecycle Timeline</h2>
+        <div class="timeline-row">
+          <div class="timeline-track" id="timelinePrimary"></div>
+          <div class="timeline-track" id="timelineSecondary"></div>
+        </div>
+        <small>
+          Colored segments show phases (protostar, main sequence, giant/supergiant, end state). The cursor indicates the current age.
+        </small>
+      </div>
+
+      <div class="notes">
+        <details>
+          <summary>Model notes</summary>
+          <ul>
+            <li>Approximate relations: L ≈ M^3.5, R ≈ M^0.8, T/T☉ ≈ (L/R²)^0.25.</li>
+            <li>Main sequence lifetime t<sub>MS</sub> ≈ 10 Gyr × M<sup>−2.5</sup>.</li>
+            <li>Fate thresholds (rough): ≤ 8 M☉ → white dwarf; 8–20 M☉ → neutron star; ≥ 20 M☉ → black hole.</li>
+            <li>Binary transfer uses Roche lobe overflow with Eggleton’s approximation; separation is held fixed (educational simplification).</li>
+          </ul>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span>Educational simulator. Numbers are simplified to illustrate big-picture trends.</span>
+    <a href="https://en.wikipedia.org/wiki/Stellar_evolution" target="_blank" rel="noopener">Learn more</a>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
