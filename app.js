@@ -70,8 +70,10 @@
       isPanning: false,
       panStartX: 0,
       panStartY: 0,
+      didDrag: false,
     },
     bgStars: [],
+    explosions: [], // active supernova explosions in world space
   };
 
   // Utility: clamp and format (use function declarations so they are hoisted)
@@ -134,6 +136,9 @@
       // Visual end-state animation
       collapseAnimating: false,
       collapseProgress: 0,
+      // Supernova
+      justEnded: false,
+      hadSupernova: false,
     };
   }
 
@@ -253,7 +258,9 @@
     for (const s of state.bgStars) {
       const [sx, sy] = worldToScreen(s.x, s.y);
       const r = Math.max(0.2, s.r);
-      ctx.fillStyle = `rgba(255,255,255,${s.a})`;
+      // twinkle
+      const a = Math.max(0, Math.min(1, s.a + (Math.random() - 0.5) * 0.05));
+      ctx.fillStyle = `rgba(255,255,255,${a})`;
       ctx.beginPath();
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fill();
@@ -270,6 +277,8 @@
     if (!state.binary) {
       // Single star centered at world origin
       drawStarAtWorld(state.star1, 0, 0, Math.min(width, height) * 0.35);
+      // Explosions on top
+      drawExplosions();
     } else {
       // Two-body layout, size scaled for visibility; positions based on separation
       const rScale = Math.min(width, height) * 0.3;
@@ -283,15 +292,26 @@
       // Roche lobes
       drawRocheLobeWorld(state.star1, state.star2, x1, 0, state.separationAU, sepWorld);
       drawRocheLobeWorld(state.star2, state.star1, x2, 0, state.separationAU, sepWorld);
+
+      // Explosions on top
+      drawExplosions();
     }
   }
 
   function colorForTemp(T) {
-    // Map temperature to color roughly (blue-hot to red-cool)
-    const t = clamp((T - 2500) / (40000 - 2500), 0, 1);
-    const r = Math.round(255 * (1 - t) + 100 * t);
-    const g = Math.round(160 * (1 - t) + 180 * t);
-    const b = Math.round(120 * (1 - t) + 255 * t);
+    // Approximate blackbody to RGB (improved mapping)
+    // Source adapted from Tanner Helland's approximation
+    let temp = clamp(T / 100, 10, 400);
+    let r, g, b;
+    // Red
+    if (temp <= 66) r = 255; else r = 329.698727446 * Math.pow(temp - 60, -0.1332047592);
+    // Green
+    if (temp <= 66) g = 99.4708025861 * Math.log(temp) - 161.1195681661; else g = 288.1221695283 * Math.pow(temp - 60, -0.0755148492);
+    // Blue
+    if (temp >= 66) b = 255; else if (temp <= 19) b = 0; else b = 138.5177312231 * Math.log(temp - 10) - 305.0447927307;
+    r = clamp(Math.round(r), 0, 255);
+    g = clamp(Math.round(g), 0, 255);
+    b = clamp(Math.round(b), 0, 255);
     return `rgb(${r},${g},${b})`;
   }
 
@@ -359,16 +379,53 @@
     if (star.ended) {
       drawCompactObject(star, cx, cy, sizePx);
     } else {
-      drawGlow(cx, cy, sizePx, color);
-      drawDisk(cx, cy, sizePx * 0.6, color);
+      // multi-stop glow for nicer visuals
+      drawMultiGlow(cx, cy, sizePx, color);
+      drawPhotosphere(cx, cy, sizePx * 0.6, color);
       drawStageRing(cx, cy, sizePx * 0.7, stage);
+    }
+
+    // Trigger supernova on first frame after end for massive stars
+    if (star.justEnded) {
+      // For stars >= 8 M☉ only
+      if (star.massInitial >= 8 && !star.hadSupernova) {
+        startSupernova(wx, wy, color);
+        star.hadSupernova = true;
+      }
+      star.justEnded = false;
     }
   }
 
-  function drawGlow(cx, cy, radius, color) {
-    const g = ctx.createRadialGradient(cx, cy, radius * 0.1, cx, cy, radius);
-    g.addColorStop(0, color);
-    g.addColorStop(1, 'rgba(255,255,255,0)');
+  function drawMultiGlow(cx, cy, radius, color) {
+    const gradient = ctx.createRadialGradient(cx, cy, radius * 0.05, cx, cy, radius);
+    gradient.addColorStop(0, color);
+    gradient.addColorStop(0.5, `${color.replace('rgb', 'rgba').replace(')', ',0.8)')}`);
+    gradient.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    // subtle corona spikes
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = Math.max(1, radius * 0.02);
+    for (let i = 0; i < 8; i++) {
+      const a = (i * Math.PI) / 4;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * radius * 0.75, Math.sin(a) * radius * 0.75);
+      ctx.lineTo(Math.cos(a) * radius * 1.1, Math.sin(a) * radius * 1.1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawPhotosphere(cx, cy, radius, color) {
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    g.addColorStop(0, 'rgba(255,255,255,0.9)');
+    g.addColorStop(0.4, color);
+    g.addColorStop(1, 'rgba(0,0,0,0.2)'); // limb darkening
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -415,16 +472,14 @@
   function drawCompactObject(star, cx, cy, sizePx) {
     if (star.fate === 'White Dwarf') {
       const color = 'rgba(200,230,255,1)';
-      drawGlow(cx, cy, sizePx * 1.4, 'rgba(180,210,255,0.7)');
+      drawMultiGlow(cx, cy, sizePx * 1.4, 'rgba(180,210,255,0.7)');
       drawDisk(cx, cy, Math.max(2, sizePx * 0.6), color);
       ctx.strokeStyle = 'rgba(200,230,255,0.8)';
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(cx, cy, sizePx * 0.9, 0, Math.PI * 2); ctx.stroke();
     } else if (star.fate === 'Neutron Star') {
-      // Tiny intense core with polar beams
-      drawGlow(cx, cy, sizePx * 1.2, 'rgba(199,125,255,0.8)');
+      drawMultiGlow(cx, cy, sizePx * 1.2, 'rgba(199,125,255,0.8)');
       drawDisk(cx, cy, Math.max(2, sizePx * 0.5), '#c77dff');
-      // beams
       ctx.strokeStyle = 'rgba(199,125,255,0.7)';
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -432,7 +487,6 @@
       ctx.moveTo(cx, cy + sizePx * 0.8); ctx.lineTo(cx, cy + sizePx * 1.6);
       ctx.stroke();
     } else {
-      // Black hole: event horizon + accretion ring
       drawDisk(cx, cy, Math.max(3, sizePx * 0.6), '#000');
       const ringR = Math.max(8, sizePx * 1.5);
       const g = ctx.createRadialGradient(cx, cy, ringR * 0.7, cx, cy, ringR);
@@ -442,6 +496,51 @@
       ctx.strokeStyle = g;
       ctx.lineWidth = Math.max(2, ringR * 0.15);
       ctx.beginPath(); ctx.arc(cx, cy, ringR, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  // Supernova system
+  function startSupernova(wx, wy, color) {
+    state.explosions.push({
+      wx, wy,
+      ageMs: 0,
+      durationMs: 2500,
+      color,
+      alive: true,
+    });
+  }
+
+  function updateExplosions(dtMs) {
+    for (const ex of state.explosions) {
+      ex.ageMs += dtMs;
+      if (ex.ageMs >= ex.durationMs) ex.alive = false;
+    }
+    state.explosions = state.explosions.filter(e => e.alive);
+  }
+
+  function drawExplosions() {
+    for (const ex of state.explosions) {
+      const t = clamp(ex.ageMs / ex.durationMs, 0, 1);
+      const [cx, cy] = worldToScreen(ex.wx, ex.wy);
+      const maxR = Math.min(els.starCanvas.width, els.starCanvas.height) * 0.6 * state.camera.zoom;
+      const r = lerp(10, maxR, easeOutCubic(t));
+      const alpha = 1 - t;
+
+      // Flash core
+      ctx.fillStyle = `rgba(255,255,255,${0.8 * alpha})`;
+      ctx.beginPath(); ctx.arc(cx, cy, 6 + 20 * (1 - alpha), 0, Math.PI * 2); ctx.fill();
+
+      // Shockwave ring
+      ctx.strokeStyle = `rgba(255,180,120,${0.9 * alpha})`;
+      ctx.lineWidth = 5 * (1 - t) + 2;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+
+      // Ejecta cloud
+      const g = ctx.createRadialGradient(cx, cy, r * 0.7, cx, cy, r * 1.1);
+      g.addColorStop(0, `rgba(255,120,80,${0.3 * alpha})`);
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx, cy, r * 1.1, 0, Math.PI * 2); ctx.fill();
     }
   }
 
@@ -476,6 +575,9 @@
     const frac = clamp(star.age / total, 0, 1);
     cursor.style.left = `${frac * 100}%`;
     el.appendChild(cursor);
+
+    // Make timeline interactive (click/drag scrubbing)
+    wireTimelineInteractivity(el);
   }
 
   // Fate scale rendering
@@ -562,6 +664,7 @@
           star.ended = true;
           star.collapseAnimating = true;
           star.collapseProgress = 0;
+          star.justEnded = true; // used to spawn supernova with world position in draw pass
         }
       } else if (star.collapseAnimating) {
         star.collapseProgress += dtMs / 2000; // 2s collapse animation
@@ -574,6 +677,9 @@
 
     // Mass transfer occurs after stage growth updates (radii change with mass)
     doMassTransfer(dtYears);
+
+    // Update supernova explosions
+    updateExplosions(dtMs);
 
     updateUI();
   }
@@ -742,6 +848,7 @@
       state.camera.isPanning = true;
       state.camera.panStartX = e.clientX;
       state.camera.panStartY = e.clientY;
+      state.camera.didDrag = false;
       canvas.classList.add('grabbing');
     });
     window.addEventListener('mousemove', (e) => {
@@ -752,18 +859,24 @@
       state.camera.panStartY = e.clientY;
       state.camera.offsetX += dx;
       state.camera.offsetY += dy;
+      if (Math.hypot(dx, dy) > 3) state.camera.didDrag = true;
       updateUI();
     });
-    window.addEventListener('mouseup', () => {
+    window.addEventListener('mouseup', (e) => {
+      const wasDragging = state.camera.isPanning;
       state.camera.isPanning = false;
       canvas.classList.remove('grabbing');
+      // If it was a click (no drag), focus on nearest star
+      if (wasDragging && !state.camera.didDrag) {
+        focusOnNearestStar(e);
+      }
     });
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const { zoom } = state.camera;
       const delta = -e.deltaY;
-      const zoomFactor = Math.exp(delta * 0.001);
-      const newZoom = clamp(zoom * zoomFactor, 0.2, 5);
+      const zoomFactor = Math.exp(delta * 0.0012);
+      const newZoom = clamp(zoom * zoomFactor, 0.1, 12);
       // Anchor zoom on mouse position
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
@@ -776,13 +889,100 @@
       state.camera.offsetY += (my - sy);
       updateUI();
     }, { passive: false });
-    canvas.addEventListener('dblclick', () => {
-      // Reset camera
-      state.camera.zoom = 1;
-      state.camera.offsetX = 0;
-      state.camera.offsetY = 0;
-      updateUI();
+    canvas.addEventListener('dblclick', (e) => {
+      // Smart double-click: focus and zoom to object
+      focusOnNearestStar(e, true);
     });
+
+    // Keyboard zoom shortcuts
+    window.addEventListener('keydown', (e) => {
+      if (e.key === '+') { adjustZoom(1.2); }
+      if (e.key === '-' || e.key === '_') { adjustZoom(1/1.2); }
+      if (e.key === '0') { state.camera.zoom = 1; state.camera.offsetX = 0; state.camera.offsetY = 0; updateUI(); }
+      if (e.key.toLowerCase() === 'f') { framePrimary(); }
+    });
+  }
+
+  function adjustZoom(factor) {
+    const canvas = els.starCanvas;
+    const rect = canvas.getBoundingClientRect();
+    const mx = rect.width / 2;
+    const my = rect.height / 2;
+    const [wx, wy] = screenToWorld(mx, my);
+    state.camera.zoom = clamp(state.camera.zoom * factor, 0.1, 12);
+    const [sx, sy] = worldToScreen(wx, wy);
+    state.camera.offsetX += (mx - sx);
+    state.camera.offsetY += (my - sy);
+    updateUI();
+  }
+
+  function focusOnNearestStar(e, zoomIn = false) {
+    const rect = els.starCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    // Compute screen positions of stars
+    let positions = [];
+    if (!state.binary) {
+      positions.push({ wx: 0, wy: 0 });
+    } else {
+      const sepWorld = clamp(state.separationAU, 0.05, 10) / 10 * (els.starCanvas.width * 0.7);
+      positions.push({ wx: -sepWorld / 2, wy: 0 });
+      positions.push({ wx: +sepWorld / 2, wy: 0 });
+    }
+    let best = null, bestD = Infinity;
+    for (const p of positions) {
+      const [sx, sy] = worldToScreen(p.wx, p.wy);
+      const d = Math.hypot(mx - sx, my - sy);
+      if (d < bestD) { bestD = d; best = { ...p, sx, sy }; }
+    }
+    if (!best) return;
+
+    // Center camera on star
+    state.camera.offsetX += (rect.width / 2 - best.sx);
+    state.camera.offsetY += (rect.height / 2 - best.sy);
+
+    if (zoomIn) {
+      state.camera.zoom = clamp(state.camera.zoom * 1.8, 0.1, 12);
+    }
+    updateUI();
+  }
+
+  function framePrimary() {
+    // Zoom to frame the primary star nicely
+    const targetZoom = 3;
+    state.camera.zoom = clamp(targetZoom, 0.1, 12);
+    // center origin
+    const rect = els.starCanvas.getBoundingClientRect();
+    const [sx, sy] = worldToScreen(0, 0);
+    state.camera.offsetX += (rect.width / 2 - sx);
+    state.camera.offsetY += (rect.height / 2 - sy);
+    updateUI();
+  }
+
+  function setSimulationAge(ageYears) {
+    state.star1.age = clamp(ageYears, 0, state.star1.tTotal);
+    if (state.binary) {
+      state.star2.age = clamp(ageYears, 0, state.star2.tTotal);
+    }
+    // Do not auto-run
+    updateUI();
+  }
+
+  function wireTimelineInteractivity(el) {
+    // Click to jump, drag to scrub
+    let isDown = false;
+    const onFromEvent = (e) => {
+      const rect = el.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / rect.width;
+      const frac = clamp(x, 0, 1);
+      const age = frac * state.star1.tTotal; // global simulation age
+      setSimulationAge(age);
+    };
+    el.addEventListener('mousedown', (e) => { isDown = true; onFromEvent(e); });
+    window.addEventListener('mousemove', (e) => { if (isDown) onFromEvent(e); });
+    window.addEventListener('mouseup', () => { isDown = false; });
+    el.addEventListener('click', onFromEvent);
   }
 
   function applyPreset(name) {
