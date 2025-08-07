@@ -74,9 +74,13 @@
     bgStars: [],
   };
 
-  // Utility: clamp and format
-  const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-  const fmt = (v, digits = 2) => Number.isFinite(v) ? v.toFixed(digits) : '—';
+  // Utility: clamp and format (use function declarations so they are hoisted)
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+  function fmt(v, digits = 2) {
+    return Number.isFinite(v) ? v.toFixed(digits) : '—';
+  }
 
   // Easing utilities for smooth visual transitions
   const lerp = (a, b, t) => a + (b - a) * t;
